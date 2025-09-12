@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neuravia Mini</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 24px; max-width: 900px; margin: auto; }
+    h1 { margin-bottom: 8px; }
+    p.muted { color: #6b7280; margin-bottom: 16px; }
+    form { display: grid; gap: 12px; }
+    textarea, input[type=range], button, select, input[type=text] { width: 100%; padding: 10px; font-size: 16px; }
+    textarea { min-height: 100px; }
+    .slider-label { font-size: 14px; }
+    .sliders { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 12px; }
+    .result { background: #f3f4f6; padding: 16px; border-radius: 8px; white-space: pre-wrap; margin-top: 18px; }
+    .buttons { display: flex; gap: 8px; margin-top: 12px; }
+    button.primary { background:#111827; color:#fff; border:0; border-radius:6px; cursor:pointer; }
+    button.primary:hover { background:#0b1220; }
+    button.secondary { background:#e5e7eb; color:#111827; border:0; border-radius:6px; cursor:pointer; }
+    fieldset { border:1px solid #e5e7eb; border-radius:8px; padding:12px; }
+    legend { font-size:14px; color:#374151; padding: 0 6px; }
+    .hint { font-size:12px; color:#6b7280; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <h1>Neuravia Mini</h1>
+  <p class="muted">Assistant d'aide à la décision en 4 volets : <strong>LOGOS</strong>, <strong>PATHOS</strong>, <strong>ETHOS</strong>, <strong>SYNTHÈSE</strong>.</p>
+
+  <form method="POST">
+    <!-- Modèles rapides -->
+    <label for="tpl">🎯 Modèles rapides</label>
+    <div style="display:flex; gap:8px;">
+      <select id="tpl" name="tpl">
+        {% for name in templates.keys() %}
+          <option value="{{ name }}" {% if tpl==name %}selected{% endif %}>{{ name or "— Choisir un modèle —" }}</option>
+        {% endfor %}
+      </select>
+      <button class="secondary" name="apply_tpl" value="1" type="submit">Appliquer</button>
+    </div>
+
+    <!-- Brief -->
+    <label for="ctx">Contexte</label>
+    <textarea id="ctx" name="contexte" placeholder="Décrivez l'organisation, marché, contraintes...">{{ contexte or "" }}</textarea>
+
+    <label for="obj">Objectif</label>
+    <textarea id="obj" name="objectif" placeholder="Que souhaitez-vous atteindre (CA, marge, satisfaction client, etc.)">{{ objectif or "" }}</textarea>
+
+    <label for="q">Question</label>
+    <textarea id="q" name="question" placeholder="Quel choix ou problème voulez-vous résoudre ?">{{ question or "" }}</textarea>
+
+    <!-- Sliders -->
+    <div class="sliders">
+      <div>
+        <div class="slider-label">Poids Coût</div>
+        <input type="range" name="weight_cost" min="0" max="100" value="{{ weights.cost }}">
+      </div>
+      <div>
+        <div class="slider-label">Poids Délai</div>
+        <input type="range" name="weight_time" min="0" max="100" value="{{ weights.time }}">
+      </div>
+      <div>
+        <div class="slider-label">Poids Risque</div>
+        <input type="range" name="weight_risk" min="0" max="100" value="{{ weights.risk }}">
+      </div>
+    </div>
+
+    <!-- Recherche web -->
+    <fieldset>
+      <legend>🔎 Recherche web (optionnelle)</legend>
+      <label style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+        <input type="checkbox" name="use_search" {% if use_search %}checked{% endif %}/>
+        <span>Inclure une recherche Google News RSS</span>
+      </label>
+      <input type="text" name="search_query" value="{{ search_query or '' }}" placeholder="Mots-clés (ex: 'prix acier Europe 2025', 'règlement DMA Apple')"/>
+      <div class="hint">Conseil : 2–5 mots-clés précis. Le contexte externe sera condensé et cité [1], [2], ...</div>
+    </fieldset>
+
+    <div>💰 Coût IA estimé : {{ cost.total }} tokens (~{{ cost.eur }} €)</div>
+    <button class="primary" type="submit">Analyser</button>
+  </form>
+
+  {% if result %}
+    <div class="result" id="analysisResult">{{ result }}</div>
+    <div class="buttons">
+      <button class="secondary" onclick="refine('kpi')">+ KPI</button>
+      <button class="secondary" onclick="refine('parades')">+ Parades</button>
+      <button class="secondary" onclick="refine('plan')">Plan + clair</button>
+    </div>
+  {% endif %}
+
+<script>
+  let refining = false;
+
+  async function refine(mode) {
+    if (refining) return; // empêche les doubles clics
+    const el = document.getElementById('analysisResult');
+    if (!el) { alert("Pas de résultat à raffiner."); return; }
+    const text = el.innerText.trim();
+    if (!text) { alert("Pas de résultat à raffiner."); return; }
+
+    refining = true;
+    const btns = document.querySelectorAll('.buttons button');
+    btns.forEach(b => b.disabled = true);
+
+    try {
+      const res = await fetch('/api/refine', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text, mode })
+      });
+
+      const ct = res.headers.get('content-type') || '';
+      let data;
+      if (ct.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const t = await res.text();
+        throw new Error(t || `HTTP ${res.status}`);
+      }
+
+      if (!res.ok) {
+        // Cas 429 ou autre erreur côté serveur
+        alert(data.error || `Erreur HTTP ${res.status}`);
+        return;
+      }
+
+      if (!data.ok) {
+        alert("Erreur du serveur: " + (data.error || "Réponse invalide"));
+        return;
+      }
+
+      // Affiche le texte raffiné
+      el.innerText = data.result;
+
+    } catch (err) {
+      console.error("Erreur refine:", err);
+      alert("Erreur de raffinement: " + (err.message || err));
+    } finally {
+      refining = false;
+      btns.forEach(b => b.disabled = false);
+    }
+  }
+</script>
+
+
+</body>
+</html>
